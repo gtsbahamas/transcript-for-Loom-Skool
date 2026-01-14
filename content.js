@@ -10,7 +10,7 @@ if (!window.loomTranscriptExtensionLoaded) {
     let checkCount = 0;
     const checkVideo = setInterval(() => {
       checkCount++;
-      const video = document.querySelector('video');
+      const video = findVideo();
       
       if (video) {
         console.log('✅ Video found after', checkCount, 'attempts');
@@ -32,8 +32,22 @@ if (!window.loomTranscriptExtensionLoaded) {
     }, 60000);
   };
 
+  // Find video element including in Shadow DOMs
+  const findVideo = (root = document) => {
+    let video = root.querySelector('video');
+    if (video) return video;
+
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) {
+        video = findVideo(el.shadowRoot);
+        if (video) return video;
+      }
+    }
+    return null;
+  };
+
   const getAvailableTracks = () => {
-    const video = document.querySelector('video');
+    const video = findVideo();
     const textTracks = video?.textTracks;
     const tracks = [];
 
@@ -95,7 +109,7 @@ if (!window.loomTranscriptExtensionLoaded) {
     // Wait for textTracks to be available
     let attempts = 0;
     while (attempts < 30) {  // Increased to 30 attempts = 15 seconds
-      const video = document.querySelector('video');
+      const video = findVideo();
       const textTracks = video?.textTracks;
       const trackCount = textTracks?.length || 0;
 
@@ -438,8 +452,13 @@ if (!window.loomTranscriptExtensionLoaded) {
       captionCountEl.textContent = '0 captions • Live mode';
       enableButtons();
 
-      const video = document.querySelector('video');
+      const video = findVideo();
       const textTracks = video?.textTracks;
+
+      if (!video) {
+        updateInfo('❌ Video element not found', 'error');
+        return;
+      }
 
       if (!textTracks || textTracks.length === 0) {
         updateInfo('❌ No caption tracks available for live capture', 'error');
@@ -658,7 +677,7 @@ if (!window.loomTranscriptExtensionLoaded) {
 
   const checkForNavigation = () => {
     const newUrl = window.location.href;
-    const video = document.querySelector('video');
+    const video = findVideo();
     const newVideoSrc = video?.src || video?.currentSrc;
 
     // Check if URL changed or video source changed
