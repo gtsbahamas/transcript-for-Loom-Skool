@@ -137,55 +137,58 @@ if (!window.loomTranscriptExtensionLoaded) {
     console.log(`✅ Using track:`, captionTrack.label || 'default');
     captionTrack.mode = 'hidden';
 
+    const duration = video.duration;
+    if (!duration || !isFinite(duration)) {
+      throw new Error('Could not determine video duration');
+    }
+
     // Store original video state
     const originalTime = video.currentTime;
     const wasPlaying = !video.paused;
     if (wasPlaying) video.pause();
 
-    // Force-load all captions by seeking through the video
-    const duration = video.duration;
-    if (duration && isFinite(duration)) {
-      updateStatus?.('⏳ Loading captions (0%)...', 'info');
-      console.log(`📺 Video duration: ${duration}s, forcing caption load...`);
+    console.log(`📺 Video duration: ${duration}s, fast-scanning for captions...`);
+    updateStatus?.('⏳ Scanning video for captions (0%)...', 'info');
 
-      // Seek through video in chunks to force caption loading
-      const chunkSize = Math.max(30, duration / 20); // 20 chunks or 30s minimum
-      for (let time = 0; time <= duration; time += chunkSize) {
-        video.currentTime = Math.min(time, duration - 0.1);
-        const percent = Math.round((time / duration) * 100);
-        updateStatus?.(`⏳ Loading captions (${percent}%)...`, 'info');
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
-
-      // Seek to end to ensure all captions loaded
-      video.currentTime = duration - 0.1;
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Restore original position
-      video.currentTime = originalTime;
-      if (wasPlaying) video.play();
-    }
-
-    // Wait a moment for cues to be accessible
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Extract cues
-    if (!captionTrack.cues || captionTrack.cues.length === 0) {
-      throw new Error('No captions loaded after seeking through video');
-    }
-
-    console.log(`📝 Found ${captionTrack.cues.length} cues`);
-    updateStatus?.('⏳ Extracting transcript...', 'info');
-
+    // Fast-forward capture: seek through video and grab activeCues at each position
     const transcript = [];
     const seenTexts = new Set();
-    for (let i = 0; i < captionTrack.cues.length; i++) {
-      const cue = captionTrack.cues[i];
-      const text = cue.text.replace(/<[^>]*>/g, '').trim();
-      if (text && !seenTexts.has(text)) {
-        seenTexts.add(text);
-        transcript.push({ startTime: cue.startTime, text });
+    const stepSize = 3; // Check every 3 seconds
+    let lastPercent = 0;
+
+    for (let time = 0; time <= duration; time += stepSize) {
+      video.currentTime = Math.min(time, duration - 0.1);
+
+      // Wait for seek and caption update
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      // Grab active cues at this position
+      const activeCues = captionTrack.activeCues;
+      if (activeCues && activeCues.length > 0) {
+        for (let i = 0; i < activeCues.length; i++) {
+          const cue = activeCues[i];
+          const text = cue.text.replace(/<[^>]*>/g, '').trim();
+          if (text && !seenTexts.has(text)) {
+            seenTexts.add(text);
+            transcript.push({ startTime: cue.startTime, text });
+          }
+        }
       }
+
+      // Update progress
+      const percent = Math.round((time / duration) * 100);
+      if (percent !== lastPercent) {
+        updateStatus?.(`⏳ Scanning video for captions (${percent}%)...`, 'info');
+        lastPercent = percent;
+      }
+    }
+
+    // Restore original position
+    video.currentTime = originalTime;
+    if (wasPlaying) video.play();
+
+    if (transcript.length === 0) {
+      throw new Error('No captions found while scanning video');
     }
 
     // Sort by timestamp
