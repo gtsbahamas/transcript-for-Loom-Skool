@@ -331,36 +331,45 @@ if (!window.loomTranscriptExtensionLoaded) {
       languageSelect.innerHTML = '';
 
       if (availableTracks.length === 0) {
-        languageSelect.innerHTML = '<option value="">No tracks found</option>';
-        return;
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'Default';
+        languageSelect.appendChild(option);
+        return false;
       }
 
       availableTracks.forEach((track, idx) => {
         const option = document.createElement('option');
         option.value = track.index;
-        const langCode = track.language !== 'unknown' ? ` (${track.language})` : '';
-        option.textContent = `${track.label}${langCode}`;
+        let label = track.label || 'Captions';
+        if (track.language && track.language !== 'unknown') {
+          label += ` (${track.language})`;
+        }
+        option.textContent = label;
         if (idx === 0) option.selected = true;
         languageSelect.appendChild(option);
       });
 
       console.log(`🌐 Found ${availableTracks.length} caption track(s)`);
+      return true;
     };
 
     // Try to populate tracks immediately, retry if needed
     const initTracks = () => {
-      populateLanguageDropdown();
-      if (availableTracks.length === 0) {
-        // Retry a few times as tracks may load async
-        let retries = 0;
-        const retryInterval = setInterval(() => {
-          populateLanguageDropdown();
-          retries++;
-          if (availableTracks.length > 0 || retries >= 10) {
-            clearInterval(retryInterval);
+      // Set initial state
+      languageSelect.innerHTML = '<option value="">Default</option>';
+
+      let retries = 0;
+      const retryInterval = setInterval(() => {
+        const found = populateLanguageDropdown();
+        retries++;
+        if (found || retries >= 10) {
+          clearInterval(retryInterval);
+          if (!found) {
+            console.log('⚠️ No caption tracks found, using default');
           }
-        }, 1000);
-      }
+        }
+      }, 1000);
     };
     initTracks();
 
@@ -671,20 +680,16 @@ if (!window.loomTranscriptExtensionLoaded) {
     console.log('🚀 Loom Transcript Extractor loaded! Choose your mode. (Press Esc to close)');
   };
 
-  // SPA navigation detection
-  let currentUrl = window.location.href;
-  let currentVideoSrc = null;
+  // SPA navigation detection - only trigger on URL path change
+  let currentPath = window.location.pathname;
 
   const checkForNavigation = () => {
-    const newUrl = window.location.href;
-    const video = findVideo();
-    const newVideoSrc = video?.src || video?.currentSrc;
+    const newPath = window.location.pathname;
 
-    // Check if URL changed or video source changed
-    if (newUrl !== currentUrl || (newVideoSrc && newVideoSrc !== currentVideoSrc)) {
+    // Only reset if the URL path actually changed (not just blob URLs)
+    if (newPath !== currentPath) {
       console.log('🔄 Navigation detected, resetting transcript extractor...');
-      currentUrl = newUrl;
-      currentVideoSrc = newVideoSrc;
+      currentPath = newPath;
 
       // Remove existing window and reset flag
       const existingWindow = document.getElementById('loom-transcript-extractor');

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Loom Transcript Extractor",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "Extract transcripts from Loom videos with timestamps, language selection, dark mode, and resizable UI. Works on embedded videos!",
   "permissions": [],
   "host_permissions": [
