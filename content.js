@@ -103,39 +103,47 @@ if (!window.loomTranscriptExtensionLoaded) {
     return 'loom-video';
   };
 
+  // Find caption element in DOM (for custom caption implementations)
+  const findCaptionElement = (root = document) => {
+    // Common caption container selectors
+    const selectors = [
+      '[class*="caption"]',
+      '[class*="subtitle"]',
+      '[class*="transcript"]',
+      '[data-testid*="caption"]',
+      '.vjs-text-track-display',
+      '.video-caption',
+      '.cc-container',
+    ];
+
+    for (const selector of selectors) {
+      const elements = root.querySelectorAll(selector);
+      for (const el of elements) {
+        // Look for visible text content
+        if (el.textContent?.trim() && el.offsetParent !== null) {
+          return el;
+        }
+      }
+    }
+
+    // Also search shadow DOMs
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) {
+        const found = findCaptionElement(el.shadowRoot);
+        if (found) return found;
+      }
+    }
+
+    return null;
+  };
+
   const fetchFullTranscript = async (trackIndex = null, updateStatus = null) => {
-    console.log('🎯 fetchFullTranscript: Starting...', trackIndex !== null ? `(track ${trackIndex})` : '');
+    console.log('🎯 fetchFullTranscript: Starting...');
 
     const video = findVideo();
     if (!video) {
       throw new Error('Video element not found');
     }
-
-    const textTracks = video.textTracks;
-    if (!textTracks || textTracks.length === 0) {
-      throw new Error('No text tracks available');
-    }
-
-    // Find caption or subtitle track
-    let captionTrack = null;
-    if (trackIndex !== null && textTracks[trackIndex]) {
-      captionTrack = textTracks[trackIndex];
-    } else {
-      for (let i = 0; i < textTracks.length; i++) {
-        const track = textTracks[i];
-        if (track.kind === 'captions' || track.kind === 'subtitles') {
-          captionTrack = track;
-          break;
-        }
-      }
-    }
-
-    if (!captionTrack) {
-      throw new Error('No caption track found');
-    }
-
-    console.log(`✅ Using track:`, captionTrack.label || 'default');
-    captionTrack.mode = 'hidden';
 
     const duration = video.duration;
     if (!duration || !isFinite(duration)) {
@@ -147,30 +155,64 @@ if (!window.loomTranscriptExtensionLoaded) {
     const wasPlaying = !video.paused;
     if (wasPlaying) video.pause();
 
-    console.log(`📺 Video duration: ${duration}s, fast-scanning for captions...`);
+    console.log(`📺 Video duration: ${duration}s, scanning for captions...`);
     updateStatus?.('⏳ Scanning video for captions (0%)...', 'info');
 
-    // Fast-forward capture: seek through video and grab activeCues at each position
     const transcript = [];
     const seenTexts = new Set();
-    const stepSize = 3; // Check every 3 seconds
+    const stepSize = 2; // Check every 2 seconds for better coverage
     let lastPercent = 0;
+    let captionsFoundVia = null;
+
+    // Try to find caption track
+    const textTracks = video.textTracks;
+    let captionTrack = null;
+    if (textTracks && textTracks.length > 0) {
+      if (trackIndex !== null && textTracks[trackIndex]) {
+        captionTrack = textTracks[trackIndex];
+      } else {
+        for (let i = 0; i < textTracks.length; i++) {
+          const track = textTracks[i];
+          if (track.kind === 'captions' || track.kind === 'subtitles') {
+            captionTrack = track;
+            break;
+          }
+        }
+      }
+      if (captionTrack) {
+        captionTrack.mode = 'showing'; // Try 'showing' instead of 'hidden'
+        console.log(`✅ Using track:`, captionTrack.label || 'default');
+      }
+    }
 
     for (let time = 0; time <= duration; time += stepSize) {
       video.currentTime = Math.min(time, duration - 0.1);
 
       // Wait for seek and caption update
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await new Promise(resolve => setTimeout(resolve, 200));
 
-      // Grab active cues at this position
-      const activeCues = captionTrack.activeCues;
-      if (activeCues && activeCues.length > 0) {
-        for (let i = 0; i < activeCues.length; i++) {
-          const cue = activeCues[i];
+      // Method 1: Try TextTrack API activeCues
+      if (captionTrack?.activeCues?.length > 0) {
+        for (let i = 0; i < captionTrack.activeCues.length; i++) {
+          const cue = captionTrack.activeCues[i];
           const text = cue.text.replace(/<[^>]*>/g, '').trim();
           if (text && !seenTexts.has(text)) {
             seenTexts.add(text);
             transcript.push({ startTime: cue.startTime, text });
+            if (!captionsFoundVia) captionsFoundVia = 'TextTrack API';
+          }
+        }
+      }
+
+      // Method 2: Try DOM caption scraping
+      if (transcript.length === 0 || captionsFoundVia === 'DOM scraping') {
+        const captionEl = findCaptionElement();
+        if (captionEl) {
+          const text = captionEl.textContent?.trim();
+          if (text && !seenTexts.has(text)) {
+            seenTexts.add(text);
+            transcript.push({ startTime: time, text });
+            if (!captionsFoundVia) captionsFoundVia = 'DOM scraping';
           }
         }
       }
@@ -178,23 +220,25 @@ if (!window.loomTranscriptExtensionLoaded) {
       // Update progress
       const percent = Math.round((time / duration) * 100);
       if (percent !== lastPercent) {
-        updateStatus?.(`⏳ Scanning video for captions (${percent}%)...`, 'info');
+        const found = transcript.length;
+        updateStatus?.(`⏳ Scanning (${percent}%)... ${found} captions found`, 'info');
         lastPercent = percent;
       }
     }
 
-    // Restore original position
+    // Reset track mode and restore position
+    if (captionTrack) captionTrack.mode = 'hidden';
     video.currentTime = originalTime;
     if (wasPlaying) video.play();
 
     if (transcript.length === 0) {
-      throw new Error('No captions found while scanning video');
+      throw new Error('No captions found. Make sure CC is enabled on the video.');
     }
 
     // Sort by timestamp
     transcript.sort((a, b) => a.startTime - b.startTime);
 
-    console.log('✅ Transcript extracted, segments:', transcript.length);
+    console.log(`✅ Transcript extracted via ${captionsFoundVia}, segments:`, transcript.length);
     return transcript;
   };
 
