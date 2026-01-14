@@ -103,75 +103,96 @@ if (!window.loomTranscriptExtensionLoaded) {
     return 'loom-video';
   };
 
-  const fetchFullTranscript = async (trackIndex = null) => {
+  const fetchFullTranscript = async (trackIndex = null, updateStatus = null) => {
     console.log('🎯 fetchFullTranscript: Starting...', trackIndex !== null ? `(track ${trackIndex})` : '');
 
-    // Wait for textTracks to be available
-    let attempts = 0;
-    while (attempts < 30) {  // Increased to 30 attempts = 15 seconds
-      const video = findVideo();
-      const textTracks = video?.textTracks;
-      const trackCount = textTracks?.length || 0;
+    const video = findVideo();
+    if (!video) {
+      throw new Error('Video element not found');
+    }
 
-      console.log(`Attempt ${attempts + 1}: Video=${!!video}, TextTracks=${trackCount}`);
+    const textTracks = video.textTracks;
+    if (!textTracks || textTracks.length === 0) {
+      throw new Error('No text tracks available');
+    }
 
-      if (textTracks && trackCount > 0) {
-        // Find caption or subtitle track
-        let captionTrack = null;
-
-        if (trackIndex !== null && textTracks[trackIndex]) {
-          // Use specified track
-          captionTrack = textTracks[trackIndex];
-          console.log(`✅ Using specified track ${trackIndex}:`, captionTrack.label);
-        } else {
-          // Find first caption/subtitle track
-          for (let i = 0; i < trackCount; i++) {
-            const track = textTracks[i];
-            if (track.kind === 'captions' || track.kind === 'subtitles') {
-              captionTrack = track;
-              console.log(`✅ Found ${track.kind} track:`, track.label);
-              break;
-            }
-          }
-        }
-
-        if (captionTrack) {
-          // Enable the track to access cues
-          captionTrack.mode = 'hidden'; // 'hidden' loads cues without showing
-          
-          // Wait for cues to load
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          
-          if (captionTrack.cues && captionTrack.cues.length > 0) {
-            console.log(`📝 Found ${captionTrack.cues.length} cues`);
-
-            // Extract text and timestamps from cues
-            const transcript = [];
-            const seenTexts = new Set();
-            for (let i = 0; i < captionTrack.cues.length; i++) {
-              const cue = captionTrack.cues[i];
-              const text = cue.text.replace(/<[^>]*>/g, '').trim(); // Remove HTML tags
-              if (text && !seenTexts.has(text)) {
-                seenTexts.add(text);
-                transcript.push({ startTime: cue.startTime, text });
-              }
-            }
-
-            console.log('✅ Transcript extracted, segments:', transcript.length);
-            return transcript;
-          } else {
-            console.log('⏳ Cues not loaded yet, waiting...');
-          }
+    // Find caption or subtitle track
+    let captionTrack = null;
+    if (trackIndex !== null && textTracks[trackIndex]) {
+      captionTrack = textTracks[trackIndex];
+    } else {
+      for (let i = 0; i < textTracks.length; i++) {
+        const track = textTracks[i];
+        if (track.kind === 'captions' || track.kind === 'subtitles') {
+          captionTrack = track;
+          break;
         }
       }
-      
-      // Wait 500ms before trying again
-      await new Promise(resolve => setTimeout(resolve, 500));
-      attempts++;
     }
-    
-    console.error('❌ No caption tracks found after 30 attempts (15 seconds)');
-    throw new Error('No caption tracks found after waiting');
+
+    if (!captionTrack) {
+      throw new Error('No caption track found');
+    }
+
+    console.log(`✅ Using track:`, captionTrack.label || 'default');
+    captionTrack.mode = 'hidden';
+
+    // Store original video state
+    const originalTime = video.currentTime;
+    const wasPlaying = !video.paused;
+    if (wasPlaying) video.pause();
+
+    // Force-load all captions by seeking through the video
+    const duration = video.duration;
+    if (duration && isFinite(duration)) {
+      updateStatus?.('⏳ Loading captions (0%)...', 'info');
+      console.log(`📺 Video duration: ${duration}s, forcing caption load...`);
+
+      // Seek through video in chunks to force caption loading
+      const chunkSize = Math.max(30, duration / 20); // 20 chunks or 30s minimum
+      for (let time = 0; time <= duration; time += chunkSize) {
+        video.currentTime = Math.min(time, duration - 0.1);
+        const percent = Math.round((time / duration) * 100);
+        updateStatus?.(`⏳ Loading captions (${percent}%)...`, 'info');
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      // Seek to end to ensure all captions loaded
+      video.currentTime = duration - 0.1;
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Restore original position
+      video.currentTime = originalTime;
+      if (wasPlaying) video.play();
+    }
+
+    // Wait a moment for cues to be accessible
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Extract cues
+    if (!captionTrack.cues || captionTrack.cues.length === 0) {
+      throw new Error('No captions loaded after seeking through video');
+    }
+
+    console.log(`📝 Found ${captionTrack.cues.length} cues`);
+    updateStatus?.('⏳ Extracting transcript...', 'info');
+
+    const transcript = [];
+    const seenTexts = new Set();
+    for (let i = 0; i < captionTrack.cues.length; i++) {
+      const cue = captionTrack.cues[i];
+      const text = cue.text.replace(/<[^>]*>/g, '').trim();
+      if (text && !seenTexts.has(text)) {
+        seenTexts.add(text);
+        transcript.push({ startTime: cue.startTime, text });
+      }
+    }
+
+    // Sort by timestamp
+    transcript.sort((a, b) => a.startTime - b.startTime);
+
+    console.log('✅ Transcript extracted, segments:', transcript.length);
+    return transcript;
   };
 
   const createTranscriptWindow = () => {
@@ -433,14 +454,14 @@ if (!window.loomTranscriptExtensionLoaded) {
 
       try {
         const selectedTrackIndex = languageSelect.value !== '' ? parseInt(languageSelect.value) : null;
-        transcript = await fetchFullTranscript(selectedTrackIndex);
+        transcript = await fetchFullTranscript(selectedTrackIndex, updateInfo);
         updateDisplay();
         captionCountEl.textContent = `${transcript.length} segments • Instant mode`;
-        updateInfo('✅ Full transcript loaded instantly!', 'success');
+        updateInfo('✅ Full transcript loaded!', 'success');
         enableButtons();
       } catch (error) {
         console.error('Error fetching transcript:', error);
-        updateInfo('❌ Could not fetch transcript. Try Live Capture mode.', 'error');
+        updateInfo(`❌ ${error.message}. Try Live Capture mode.`, 'error');
         captionCountEl.textContent = 'Error';
       }
     });
@@ -607,13 +628,13 @@ if (!window.loomTranscriptExtensionLoaded) {
         captionCountEl.textContent = 'Loading...';
         try {
           const selectedTrackIndex = languageSelect.value !== '' ? parseInt(languageSelect.value) : null;
-          transcript = await fetchFullTranscript(selectedTrackIndex);
+          transcript = await fetchFullTranscript(selectedTrackIndex, updateInfo);
           updateDisplay();
           captionCountEl.textContent = `${transcript.length} segments • Instant mode`;
-          updateInfo('✅ Full transcript loaded instantly!', 'success');
+          updateInfo('✅ Full transcript loaded!', 'success');
         } catch (error) {
           console.error('Error fetching transcript:', error);
-          updateInfo('❌ Could not fetch transcript.', 'error');
+          updateInfo(`❌ ${error.message}`, 'error');
           captionCountEl.textContent = 'Error';
         }
       } else if (currentMode === 'live') {
